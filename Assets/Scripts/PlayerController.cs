@@ -7,10 +7,12 @@ using UnityEngine.InputSystem;
 [RequireComponent(typeof(Rigidbody2D))]
 public class PlayerController : MonoBehaviour
 {
+    #region Script Parameters
     public static readonly int anim_param_move = Animator.StringToHash("xVelocity");
     public static readonly int anim_param_jump = Animator.StringToHash("yVelocity");
     public static readonly int anim_param_grounded = Animator.StringToHash("isGrounded");
     public static readonly int anim_param_wallSlide = Animator.StringToHash("isWallDetected");
+    public static readonly int anim_param_knockback = Animator.StringToHash("knocked");
 
     [Header("Movement")]
     [SerializeField, Tooltip("Movement speed of the player")] private float moveSpeed = 5f;
@@ -34,7 +36,17 @@ public class PlayerController : MonoBehaviour
     [SerializeField, Tooltip("Transform used for wall checks")] private Transform secondaryWallCheck;
     [SerializeField, Tooltip("Distance from check to wall")] private float wallCheckDistance = 0.2f;
     [SerializeField, Tooltip("Is the player touching a wall?")] private bool isTouchingWall;
-
+    [Space]
+    [Header("Wall Slide/Jump")]
+    [SerializeField, Tooltip("Max downward speed while sliding on a wall")] private float wallSlideSpeed = 2f;
+    [SerializeField, Tooltip("Horizontal and vertical force applied on wall jump")] private Vector2 wallJumpForce = new Vector2(8f, 12f);
+    [SerializeField, Tooltip("Seconds to reduce horizontal control after wall jump")] private float wallJumpLockTime = 0.2f;
+    [Space]
+    [Header("Knockback")]
+    [SerializeField, Tooltip("Force applied when the player is knocked back")] private Vector2 knockbackForce = new Vector2(10f, 5f);
+    [SerializeField, Tooltip("Duration of the knockback effect")] private float knockbackDuration = 1f;
+    [SerializeField, Tooltip("Is the player currently knocked back?")] private bool isKnocked;
+    [SerializeField, Tooltip("Can the player be knocked back?")] private bool canBeKnocked;
     private Vector2 movementInput;
     private Rigidbody2D rb;
     private Animator animator;
@@ -46,7 +58,11 @@ public class PlayerController : MonoBehaviour
     private float jumpBufferCounter;
     private float normalGravityScale;
     private bool jumpHeld;
+    private bool isWallSliding;
+    private float wallJumpCounter;
+    #endregion
 
+    #region  Unity Methods
     private void Awake()
     {
         rb = GetComponent<Rigidbody2D>();
@@ -90,6 +106,12 @@ public class PlayerController : MonoBehaviour
 
     private void Update()
     {
+        // if key K is pressed then call knockback method
+        if (Input.GetKeyDown(KeyCode.K))
+        {
+            Knockback();
+        }
+
         // Grounded and timers
         bool groundedNow = PlayerIsGrounded();
         if (groundedNow)
@@ -100,10 +122,17 @@ public class PlayerController : MonoBehaviour
         if (jumpBufferCounter > 0f)
             jumpBufferCounter -= Time.deltaTime;
 
-        // Use buffered jump when possible
-        if (jumpBufferCounter > 0f && jumpCount > 0)
+        // Use buffered jump when possible (prefer wall jump if sliding)
+        if (jumpBufferCounter > 0f)
         {
-            DoJump();
+            if (PlayerIsTouchingWall() && !isGrounded)
+            {
+                DoWallJump();
+            }
+            else if (jumpCount > 0)
+            {
+                DoJump();
+            }
         }
 
         // Better jump gravity
@@ -122,7 +151,14 @@ public class PlayerController : MonoBehaviour
     private void FixedUpdate()
     {
         Vector2 playerMove = rb.linearVelocity;
-        playerMove.x = movementInput.x * moveSpeed;
+        if (wallJumpCounter > 0f)
+        {
+            wallJumpCounter -= Time.fixedDeltaTime;
+        }
+        else
+        {
+            playerMove.x = movementInput.x * moveSpeed;
+        }
         rb.linearVelocity = playerMove;
 
         if (movementInput.x > 0.1f) FlipPlayerSprite(true);
@@ -130,16 +166,44 @@ public class PlayerController : MonoBehaviour
 
         if (PlayerIsGrounded() && jumpCount < maxJumps) jumpCount = maxJumps;
     }
+    #endregion
 
+    #region Player Movement Methods
     private void OnMove(InputAction.CallbackContext ctx)
     {
         movementInput = ctx.ReadValue<Vector2>();
+    }
+
+    private void OnJump(InputValue value)
+    {
+        if (value.isPressed)
+        {
+            jumpHeld = true;
+            jumpBufferCounter = jumpBufferTime;
+
+            if (PlayerIsTouchingWall() && !isGrounded)
+            {
+                DoWallJump();
+            }
+        }
+        else
+        {
+            jumpHeld = false;
+            if (rb.linearVelocity.y > 0f)
+                rb.linearVelocity = new Vector2(rb.linearVelocity.x, rb.linearVelocity.y * jumpCutMultiplier);
+        }
     }
 
     private void OnJumpPerformed(InputAction.CallbackContext ctx)
     {
         jumpHeld = true;
         jumpBufferCounter = jumpBufferTime; // buffer the press
+
+        // If touching a wall and airborne, wall jump immediately
+        if (PlayerIsTouchingWall() && !isGrounded)
+        {
+            DoWallJump();
+        }
     }
 
     private void OnJumpCanceled(InputAction.CallbackContext ctx)
@@ -148,22 +212,6 @@ public class PlayerController : MonoBehaviour
         // Cut jump if still moving up
         if (rb.linearVelocity.y > 0f)
             rb.linearVelocity = new Vector2(rb.linearVelocity.x, rb.linearVelocity.y * jumpCutMultiplier);
-    }
-
-    // Support PlayerInput "Send Messages" (optional)
-    public void OnJump(InputValue value)
-    {
-        if (value.isPressed)
-        {
-            jumpHeld = true;
-            jumpBufferCounter = jumpBufferTime;
-        }
-        else
-        {
-            jumpHeld = false;
-            if (rb.linearVelocity.y > 0f)
-                rb.linearVelocity = new Vector2(rb.linearVelocity.x, rb.linearVelocity.y * jumpCutMultiplier);
-        }
     }
 
     private void DoJump()
@@ -178,12 +226,46 @@ public class PlayerController : MonoBehaviour
         // Debug.Log($"Jumped! Remaining jumps: {jumpCount}");
     }
 
+    private void DoWallJump()
+    {
+        // Jump away from the wall based on facing direction
+        int awayFromWallDir = transform.localScale.x > 0 ? -1 : 1;
+        rb.linearVelocity = new Vector2(wallJumpForce.x * awayFromWallDir, wallJumpForce.y);
+
+        // Flip to face the new direction
+        FlipPlayerSprite(awayFromWallDir > 0);
+
+        // Briefly lock horizontal control to let the wall jump breathe
+        wallJumpCounter = wallJumpLockTime;
+        jumpBufferCounter = 0f;
+
+        // After a wall jump, allow one additional air jump if you have multi-jumps, otherwise consume it
+        if (maxJumps > 1)
+            jumpCount = Mathf.Max(0, maxJumps - 1);
+        else
+            jumpCount = 0;
+    }
+
+    private void Knockback()
+    {
+        isKnocked = true;
+        canBeKnocked = false;
+
+        animator.SetTrigger(anim_param_knockback);
+    }
+
+    #endregion
+
+    #region Helpers
     private void HandleWallSlideInteraction()
     {
-        if (PlayerIsTouchingWall() && !isGrounded && rb.linearVelocity.y < 0f)
+        // Consider wall sliding only when airborne and descending
+        isWallSliding = PlayerIsTouchingWall() && !isGrounded && rb.linearVelocity.y < 0f;
+        if (isWallSliding)
         {
-            rb.gravityScale /= 2f; 
-            if (rb.linearVelocity.y < -2f) rb.linearVelocity = new Vector2(rb.linearVelocity.x, -2f);
+            // Clamp fall speed while sliding
+            if (rb.linearVelocity.y < -wallSlideSpeed)
+                rb.linearVelocity = new Vector2(rb.linearVelocity.x, -wallSlideSpeed);
         }
     }
 
@@ -217,6 +299,8 @@ public class PlayerController : MonoBehaviour
         return isTouchingWall;
     }
 
+
+
     private void OnDrawGizmosSelected()
     {
         Gizmos.color = Color.red;
@@ -227,4 +311,5 @@ public class PlayerController : MonoBehaviour
         Gizmos.DrawLine(secondaryWallCheck.position, secondaryWallCheck.position + Vector3.right * transform.localScale.x * wallCheckDistance);
 
     }
+    #endregion
 }
