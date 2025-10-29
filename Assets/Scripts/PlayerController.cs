@@ -45,8 +45,8 @@ public class PlayerController : MonoBehaviour
     [Header("Knockback")]
     [SerializeField, Tooltip("Force applied when the player is knocked back")] private Vector2 knockbackForce = new Vector2(10f, 5f);
     [SerializeField, Tooltip("Duration of the knockback effect")] private float knockbackDuration = 1f;
-    [SerializeField, Tooltip("Is the player currently knocked back?")] private bool isKnocked;
-    [SerializeField, Tooltip("Can the player be knocked back?")] private bool canBeKnocked;
+    [SerializeField, Tooltip("Is the player currently knocked back?")] private bool isKnocked = false;
+    [SerializeField, Tooltip("Can the player be knocked back?")] private bool canBeKnocked = true;
     private Vector2 movementInput;
     private Rigidbody2D rb;
     private Animator animator;
@@ -106,12 +106,10 @@ public class PlayerController : MonoBehaviour
 
     private void Update()
     {
+        if (isKnocked) return;
         // if key K is pressed then call knockback method
-        if (Input.GetKeyDown(KeyCode.K))
-        {
-            Knockback();
-        }
-
+        if (inputActions.Player.Testing.IsPressed()) Knockback();
+        
         // Grounded and timers
         bool groundedNow = PlayerIsGrounded();
         if (groundedNow)
@@ -247,11 +245,26 @@ public class PlayerController : MonoBehaviour
     }
 
     private void Knockback()
+    { 
+        if (isKnocked) return;
+
+        StartCoroutine(KnockbackCoroutine());
+        animator.SetTrigger(anim_param_knockback);
+
+        rb.linearVelocity = new Vector2(knockbackForce.x * (transform.localScale.x > 0 ? -1 : 1), knockbackForce.y);
+    }
+
+    private IEnumerator KnockbackCoroutine()
     {
         isKnocked = true;
         canBeKnocked = false;
+        // Determine knockback direction based on current facing
+        int knockbackDir = transform.localScale.x > 0 ? -1 : 1;
 
-        animator.SetTrigger(anim_param_knockback);
+        yield return new WaitForSeconds(knockbackDuration);
+
+        isKnocked = false;
+        canBeKnocked = true;
     }
 
     #endregion
